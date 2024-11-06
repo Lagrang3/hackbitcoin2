@@ -1,6 +1,0 @@
-[submodule "external/ccan"]
-	path = external/ccan
-	url = https://github.com/rustyrussell/ccan.git
-[submodule "external/libsodium"]
-	path = external/libsodium
-	url = https://github.com/jedisct1/libsodium.git
