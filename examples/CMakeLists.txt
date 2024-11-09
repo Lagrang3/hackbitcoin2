@@ -12,3 +12,6 @@ target_link_libraries(base58 bitcoin)
 
 add_executable(ripemd ripemd.cpp)
 target_link_libraries(ripemd bitcoin)
+
+add_executable(p2pkh-address p2pkh-address.cpp)
+target_link_libraries(p2pkh-address bitcoin secp256k1)
