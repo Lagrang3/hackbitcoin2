@@ -1,5 +1,6 @@
 add_library(bitcoin
 	    crypto/ripemd160.cpp
+	    crypto/sha256.cpp
 	    util/spanparsing.cpp
 	    util/strencodings.cpp
 	    util/string.cpp
