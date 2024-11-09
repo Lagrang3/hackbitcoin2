@@ -1,5 +1,3 @@
-#include <secp256k1.h>
-#include <sodium.h>
 #include <sys/random.h>
 
 #include <algorithm>
@@ -7,6 +5,10 @@
 #include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <vector>
+
+#include "secp256k1.h"
+#include "util/strencodings.h"
 
 typedef std::array<unsigned char, 32> seckey;
 
@@ -25,7 +27,7 @@ int main(void) {
 	int return_val;
 
 	// initialize cryptographic libraries
-	std::array<unsigned char, 32> randomize;
+	std::vector<unsigned char> randomize(32);
 	getrandom(randomize.data(), randomize.size(), 0);
 
 	secp256k1_context *ctx =
@@ -35,12 +37,7 @@ int main(void) {
 		return 1;
 	}
 
-	if (sodium_init() < 0) {
-		std::cerr << "Failed to inizialize libsodium" << std::endl;
-		return 1;
-	}
-
-	std::array<unsigned char, 32> k = seckey_from_num(5001);
+	seckey k = seckey_from_num(5001);
 	if (!secp256k1_ec_seckey_verify(ctx, k.data())) {
 		std::cerr << "Bad secret key" << std::endl;
 		return 1;
@@ -51,7 +48,7 @@ int main(void) {
 		std::cerr << "Failed to create pubkey" << std::endl;
 		return 1;
 	}
-	std::array<unsigned char, 65> compressed_pubkey;
+	std::array<unsigned char, 33> compressed_pubkey;
 	size_t compressed_pubkey_len = compressed_pubkey.size();
 	if (!secp256k1_ec_pubkey_serialize(ctx, compressed_pubkey.data(),
 					   &compressed_pubkey_len, &pk,
@@ -61,14 +58,8 @@ int main(void) {
 	}
 
 	// print it in hex
-	std::array<char, 2 * compressed_pubkey.size() + 1>
-	    compressed_pubkey_hex;
-	sodium_bin2hex(compressed_pubkey_hex.data(),
-		       compressed_pubkey_hex.size(), compressed_pubkey.data(),
-		       compressed_pubkey_len);
-	assert(std::string(compressed_pubkey_hex.data()) ==
-	       "0357a4f368868a8a6d572991e484e664810ff14c05c0fa023275251151fe0e5"
-	       "3d1");
+	std::cout << HexStr(compressed_pubkey) << std::endl;
+	// "0357a4f368868a8a6d572991e484e664810ff14c05c0fa023275251151fe0e53d1"
 	return 0;
 }
 

@@ -1,3 +1,5 @@
+add_subdirectory(secp256k1)
+
 add_library(bitcoin
 	    base58.cpp
 	    hash.cpp
