@@ -4,7 +4,10 @@
 #include <array>
 #include <cassert>
 #include <cstdint>
+#include <ctime>
+#include <fstream>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 #include "base58.h"
@@ -49,9 +52,6 @@ void describe_key(const seckey &k) {
 		return;
 	}
 	std::cout << "priv key: " << HexStr(k) << "\n"
-		  << "WIF: "
-		  << "..."
-		  << "\n"
 		  << "address: " << address(pk) << std::endl;
 }
 
@@ -71,8 +71,122 @@ seckey &operator++(seckey &k) {
 	}
 	return k;
 }
+seckey &operator+=(seckey &k, int x) {
+	for (int i = k.size() - 1; i >= 0 && x; i--) {
+		x += k.data()[i];
+		k.data()[i] = x & 0xff;
+		x >>= 8;
+	}
+	return k;
+}
 
-int main(void) {
+void build_masks(seckey &mask, int bits) {
+	for (int i = mask.size() - 1; i >= 0; i--) {
+		unsigned char val = 0;
+		if (bits >= 8) {
+			val = 0xff;
+			bits -= 8;
+		} else if (bits == 0) {
+			val = 0x00;
+		} else {
+			val = (1 << (bits)) - 1;
+			bits = 0;
+		}
+		mask.data()[i] = val;
+	}
+}
+
+auto read_puzzle(std::string fname) {
+	std::ifstream ifs(fname);
+	std::vector<std::string> v;
+	std::string s;
+	while (ifs >> s) {
+		v.push_back(s);
+	}
+	return v;
+}
+
+void show_help() {
+	std::cerr << "Usage:"
+		  << " keyhunt num_puzze [num_threads]" << std::endl;
+}
+
+std::mutex write_solution;
+bool solution_found;
+seckey solution;
+
+void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
+	   int stepsize, int thread_idx) {
+	// {
+	// 	std::lock_guard<std::mutex> guard(write_solution);
+	// 	std::cout << "Initial seed: " << HexStr(kinit) << std::endl;
+	// }
+
+	seckey k;
+	seckey mask2 = mask;
+	++mask2;  // mask2 = 1+ mask, eg. if mask=0xff, then mask2=0x0100
+
+	std::array<unsigned char, 21> keyhash;
+	keyhash[0] = 0x00;
+
+	secp256k1_pubkey pk;
+	std::array<unsigned char, 33> compressed_pubkey;
+	size_t pubkey_len = compressed_pubkey.size();
+	const size_t log_step = 1000000;
+
+	for (size_t i = 0;; i++) {
+		if (solution_found) return;
+
+		// new "random number"
+		kinit += stepsize;
+
+		// apply mask
+		std::transform(
+		    kinit.begin(), kinit.end(), mask.begin(), k.begin(),
+		    [](unsigned char a, unsigned char b) { return a & b; });
+		std::transform(
+		    k.begin(), k.end(), mask2.begin(), k.begin(),
+		    [](unsigned char a, unsigned char b) { return a | b; });
+
+		if (i % log_step == 0) {
+			std::lock_guard<std::mutex> guard(write_solution);
+
+			time_t t = time(NULL);
+			struct tm gm = *gmtime(&t);
+			std::array<char, 256> buff;
+			strftime(buff.data(), buff.size(), "%F %T", &gm);
+
+			std::cout << "[" << buff.data() << "] "
+				  << "thread " << thread_idx << ": "
+				  << "iteration " << i / log_step << "M, key "
+				  << HexStr(k) << std::endl;
+		}
+
+		if (!secp256k1_ec_pubkey_create(ctx, &pk, k.data())) {
+			std::lock_guard<std::mutex> guard(write_solution);
+			std::cerr << "invalid private key\n";
+			continue;
+		}
+		secp256k1_ec_pubkey_serialize(ctx, compressed_pubkey.data(),
+					      &pubkey_len, &pk,
+					      SECP256K1_EC_COMPRESSED);
+		CHash160()
+		    .Write(compressed_pubkey)
+		    .Finalize(Span(keyhash.begin() + 1, keyhash.end()));
+
+		if (khash_equal(keyhash, target_keyhash)) {
+			std::lock_guard<std::mutex> guard(write_solution);
+			std::cout << "found key!\n";
+			break;
+		}
+	}
+
+	std::lock_guard<std::mutex> guard(write_solution);
+	solution = k;
+	solution_found = true;
+}
+
+int main(int argc, char *argv[]) {
 	// initialize cryptographic libraries
 	seckey randomize;
 	getrandom(randomize.data(), randomize.size(), 0);
@@ -83,71 +197,44 @@ int main(void) {
 		return 1;
 	}
 
-	std::string address = "1PgQVLmst3Z314JrQn5TNiys8Hc38TcXJu";
+	if (argc < 2) {
+		show_help();
+		return 1;
+	}
+	int num_threads = 1;
+	int npuzzle = std::atoi(argv[1]);
+	auto puzzle = read_puzzle("puzzle.txt");
+	std::string target_address = puzzle[npuzzle];
+
+	if (argc == 3) num_threads = std::atoi(argv[2]);
+
+	if (argc > 3) {
+		show_help();
+		return 1;
+	}
+
+	std::cout << "solving puzzle: " << target_address << "\n"
+		  << "num bits: " << npuzzle << std::endl;
+
 	std::vector<unsigned char> target_keyhash(21);
-	if (!DecodeBase58Check(address, target_keyhash,
+	if (!DecodeBase58Check(target_address, target_keyhash,
 			       target_keyhash.size())) {
 		std::cerr << "panic: could not decode address to keyhash"
 			  << std::endl;
 		return 1;
 	}
 
-	const int search_bits = 11;
 	seckey keymask;
+	build_masks(keymask, npuzzle);
 
-	{
-		int bits = search_bits;
-		for (int i = keymask.size() - 1; i >= 0; i--) {
-			unsigned char val = 0;
-			if (bits >= 8) {
-				val = 0xff;
-				bits -= 8;
-			} else if (bits == 0) {
-				val = 0x00;
-			} else {
-				val = (1 << (bits)) - 1;
-				bits = 0;
-			}
-			keymask.data()[i] = val;
-		}
-	}
-	std::cout << "my mask: " << HexStr(keymask) << std::endl;
-
-	seckey k = seckey::ONE;
-	secp256k1_pubkey pk;
-	std::array<unsigned char, 33> compressed_pubkey;
-	size_t pubkey_len = compressed_pubkey.size();
-	std::array<unsigned char, 21> keyhash;
-	keyhash[0] = 0x00;
-	for (size_t i = 0;; i++) {
-		// new "random number"
+	solution_found = false;
+	std::vector<std::thread> t(num_threads);
+	for (int i = 0; i < num_threads; i++) {
+		t[i] = std::thread(solve, keymask, randomize, target_keyhash,
+				   num_threads, i);
 		++randomize;
-
-		// apply mask
-		std::transform(
-		    randomize.begin(), randomize.end(), keymask.begin(),
-		    k.begin(),
-		    [](unsigned char a, unsigned char b) { return a & b; });
-
-		if (!secp256k1_ec_pubkey_create(ctx, &pk, k.data())) {
-			// std::cerr << "panic: invalid private key" <<
-			// std::endl; return 1;
-			continue;
-		}
-		// std::cout << "testing key: " << HexStr(k) << std::endl;
-
-		secp256k1_ec_pubkey_serialize(ctx, compressed_pubkey.data(),
-					      &pubkey_len, &pk,
-					      SECP256K1_EC_COMPRESSED);
-		CHash160()
-		    .Write(compressed_pubkey)
-		    .Finalize(Span(keyhash.begin() + 1, keyhash.end()));
-
-		if (khash_equal(keyhash, target_keyhash)) {
-			std::cout << "found key!\n";
-			describe_key(k);
-			break;
-		}
 	}
+	for (int i = 0; i < num_threads; i++) t[i].join();
+	describe_key(solution);
 	return 0;
 }
