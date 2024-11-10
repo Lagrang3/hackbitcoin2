@@ -46,12 +46,21 @@ std::string address(const secp256k1_pubkey &pk) {
 	return EncodeBase58Check(keyhash);
 }
 
+std::string wif(const seckey &k) {
+	std::array<unsigned char, 34> rawkey;
+	rawkey[0] = 0x80;
+	rawkey[rawkey.size() - 1] = 0x01;
+	std::copy(k.begin(), k.end(), rawkey.data() + 1);
+	return EncodeBase58Check(rawkey);
+}
+
 void describe_key(const seckey &k) {
 	secp256k1_pubkey pk;
 	if (!secp256k1_ec_pubkey_create(ctx, &pk, k.data())) {
 		return;
 	}
 	std::cout << "priv key: " << HexStr(k) << "\n"
+		  << "wif: " << wif(k) << "\n"
 		  << "address: " << address(pk) << std::endl;
 }
 
@@ -159,7 +168,7 @@ void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
 			std::cout << "[" << buff.data() << "] "
 				  << "thread " << thread_idx << ": "
 				  << "iteration " << i / log_step << "M, key "
-				  << HexStr(k) << std::endl;
+				  << HexStr(k) << "\n";
 		}
 
 		if (!secp256k1_ec_pubkey_create(ctx, &pk, k.data())) {
@@ -177,13 +186,11 @@ void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
 		if (khash_equal(keyhash, target_keyhash)) {
 			std::lock_guard<std::mutex> guard(write_solution);
 			std::cout << "found key!\n";
-			break;
+			solution = k;
+			solution_found = true;
+			return;
 		}
 	}
-
-	std::lock_guard<std::mutex> guard(write_solution);
-	solution = k;
-	solution_found = true;
 }
 
 int main(int argc, char *argv[]) {
