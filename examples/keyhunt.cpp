@@ -7,6 +7,7 @@
 #include <ctime>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -124,8 +125,21 @@ std::mutex write_solution;
 bool solution_found;
 seckey solution;
 
+std::string thread_log(int thread_idx) {
+	std::stringstream s;
+
+	time_t t = time(NULL);
+	struct tm gm = *gmtime(&t);
+	std::array<char, 256> buff;
+	strftime(buff.data(), buff.size(), "%F %T", &gm);
+
+	s << "[" << buff.data() << "] "
+	  << "thread " << thread_idx << ": ";
+	return s.str();
+}
+
 void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
-	   int stepsize, int thread_idx) {
+	   int thread_idx) {
 	// {
 	// 	std::lock_guard<std::mutex> guard(write_solution);
 	// 	std::cout << "Initial seed: " << HexStr(kinit) << std::endl;
@@ -147,7 +161,7 @@ void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
 		if (solution_found) return;
 
 		// new "random number"
-		kinit += stepsize;
+		++kinit;
 
 		// apply mask
 		std::transform(
@@ -159,16 +173,9 @@ void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
 
 		if (i % log_step == 0) {
 			std::lock_guard<std::mutex> guard(write_solution);
-
-			time_t t = time(NULL);
-			struct tm gm = *gmtime(&t);
-			std::array<char, 256> buff;
-			strftime(buff.data(), buff.size(), "%F %T", &gm);
-
-			std::cout << "[" << buff.data() << "] "
-				  << "thread " << thread_idx << ": "
-				  << "iteration " << i / log_step << "M, key "
-				  << HexStr(k) << "\n";
+			std::cout << thread_log(thread_idx) << "iteration "
+				  << i / log_step << "M, key " << HexStr(k)
+				  << "\n";
 		}
 
 		if (!secp256k1_ec_pubkey_create(ctx, &pk, k.data())) {
@@ -185,7 +192,7 @@ void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
 
 		if (khash_equal(keyhash, target_keyhash)) {
 			std::lock_guard<std::mutex> guard(write_solution);
-			std::cout << "found key!\n";
+			std::cout << thread_log(thread_idx) << "found key!\n";
 			solution = k;
 			solution_found = true;
 			return;
@@ -237,9 +244,9 @@ int main(int argc, char *argv[]) {
 	solution_found = false;
 	std::vector<std::thread> t(num_threads);
 	for (int i = 0; i < num_threads; i++) {
-		t[i] = std::thread(solve, keymask, randomize, target_keyhash,
-				   num_threads, i);
-		++randomize;
+		seckey kinit;  // initial key is different for every thread
+		getrandom(kinit.data(), kinit.size(), 0);
+		t[i] = std::thread(solve, keymask, kinit, target_keyhash, i);
 	}
 	for (int i = 0; i < num_threads; i++) t[i].join();
 	describe_key(solution);
