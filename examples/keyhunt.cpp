@@ -124,6 +124,7 @@ void show_help() {
 std::mutex write_solution;
 bool solution_found;
 seckey solution;
+size_t global_iteration;
 
 std::string thread_log(int thread_idx) {
 	std::stringstream s;
@@ -156,12 +157,18 @@ void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
 	std::array<unsigned char, 33> compressed_pubkey;
 	size_t pubkey_len = compressed_pubkey.size();
 	const size_t log_step = 1000000;
+	const size_t suffle_step = log_step * 10;
 
 	for (size_t i = 0;; i++) {
 		if (solution_found) return;
 
 		// new "random number"
-		++kinit;
+		if (i % suffle_step == 0 && i)
+			CSHA256()
+			    .Write(kinit.data(), kinit.size())
+			    .Finalize(kinit.data());
+		else
+			++kinit;
 
 		// apply mask
 		std::transform(
@@ -171,11 +178,12 @@ void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
 		    k.begin(), k.end(), mask2.begin(), k.begin(),
 		    [](unsigned char a, unsigned char b) { return a | b; });
 
-		if (i % log_step == 0) {
+		if (i % log_step == 0 && i) {
 			std::lock_guard<std::mutex> guard(write_solution);
+			global_iteration++;
 			std::cout << thread_log(thread_idx) << "iteration "
-				  << i / log_step << "M, key " << HexStr(k)
-				  << "\n";
+				  << global_iteration << "M, key " << HexStr(k)
+				  << std::endl;
 		}
 
 		if (!secp256k1_ec_pubkey_create(ctx, &pk, k.data())) {
