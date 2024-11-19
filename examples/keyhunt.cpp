@@ -90,6 +90,12 @@ seckey &operator+=(seckey &k, int x) {
 	return k;
 }
 
+bool operator==(const seckey &k1, const seckey &k2) {
+	for (int i = 0; i < k1.size(); i++)
+		if (k1.data()[i] != k2.data()[i]) return false;
+	return true;
+}
+
 void build_masks(seckey &mask, int bits) {
 	for (int i = mask.size() - 1; i >= 0; i--) {
 		unsigned char val = 0;
@@ -139,6 +145,29 @@ std::string thread_log(int thread_idx) {
 	return s.str();
 }
 
+seckey apply_mask(seckey mask, seckey kinit) {
+	seckey mask2 = mask;
+	++mask2;  // mask2 = 1+ mask, eg. if mask=0xff, then mask2=0x0100
+	seckey k;
+
+	std::transform(kinit.begin(), kinit.end(), mask.begin(), k.begin(),
+		       [](unsigned char a, unsigned char b) { return a & b; });
+	std::transform(k.begin(), k.end(), mask2.begin(), k.begin(),
+		       [](unsigned char a, unsigned char b) { return a | b; });
+	return k;
+}
+
+void get_seckey_and_pubkey(seckey mask, seckey kinit, seckey &k,
+			   secp256k1_pubkey &pk) {
+	k = apply_mask(mask, kinit);
+	if (!secp256k1_ec_pubkey_create(ctx, &pk, k.data())) abort();
+}
+
+bool k_in_range(seckey mask, seckey k){
+	seckey k2 = apply_mask(mask, k);
+	return k==k2;
+}
+
 void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
 	   int thread_idx) {
 	// {
@@ -146,9 +175,12 @@ void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
 	// 	std::cout << "Initial seed: " << HexStr(kinit) << std::endl;
 	// }
 
+	seckey ZERO;
+	std::fill(ZERO.begin(), ZERO.end(), 0);
+	seckey ONE = ZERO;
+	++ONE;
+
 	seckey k;
-	seckey mask2 = mask;
-	++mask2;  // mask2 = 1+ mask, eg. if mask=0xff, then mask2=0x0100
 
 	std::array<unsigned char, 21> keyhash;
 	keyhash[0] = 0x00;
@@ -157,26 +189,30 @@ void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
 	std::array<unsigned char, 33> compressed_pubkey;
 	size_t pubkey_len = compressed_pubkey.size();
 	const size_t log_step = 1000000;
-	const size_t suffle_step = log_step * 10;
+	const size_t suffle_step = log_step * 1000;
+
+	get_seckey_and_pubkey(mask, kinit, k, pk);
 
 	for (size_t i = 0;; i++) {
 		if (solution_found) return;
 
 		// new "random number"
-		if (i % suffle_step == 0 && i)
+		if (i % suffle_step == 0 && i) {
 			CSHA256()
 			    .Write(kinit.data(), kinit.size())
 			    .Finalize(kinit.data());
-		else
-			++kinit;
 
-		// apply mask
-		std::transform(
-		    kinit.begin(), kinit.end(), mask.begin(), k.begin(),
-		    [](unsigned char a, unsigned char b) { return a & b; });
-		std::transform(
-		    k.begin(), k.end(), mask2.begin(), k.begin(),
-		    [](unsigned char a, unsigned char b) { return a | b; });
+			get_seckey_and_pubkey(mask, kinit, k, pk);
+		} else {
+			++kinit;
+			++k;
+			if (!secp256k1_ec_pubkey_tweak_add(ctx, &pk, ONE.data()))
+				abort();
+
+			if (!k_in_range(mask, k)) {
+				get_seckey_and_pubkey(mask, kinit, k, pk);
+			}
+		}
 
 		if (i % log_step == 0 && i) {
 			std::lock_guard<std::mutex> guard(write_solution);
@@ -186,11 +222,6 @@ void solve(seckey mask, seckey kinit, std::vector<unsigned char> target_keyhash,
 				  << std::endl;
 		}
 
-		if (!secp256k1_ec_pubkey_create(ctx, &pk, k.data())) {
-			std::lock_guard<std::mutex> guard(write_solution);
-			std::cerr << "invalid private key\n";
-			continue;
-		}
 		secp256k1_ec_pubkey_serialize(ctx, compressed_pubkey.data(),
 					      &pubkey_len, &pk,
 					      SECP256K1_EC_COMPRESSED);
